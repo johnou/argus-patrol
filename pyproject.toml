@@ -1,0 +1,47 @@
+[build-system]
+requires = ["setuptools>=77"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "argus-patrol"
+version = "0.1.0"
+description = "Battery-conscious Reolink Argus PT preset patrol over UID/P2P"
+readme = "README.md"
+requires-python = ">=3.11"
+dependencies = [
+  "pyneolink==0.4.2",
+  "PyYAML>=6.0.2",
+]
+
+[project.optional-dependencies]
+dev = [
+  "mypy>=1.18",
+  "pytest>=8.3",
+  "pytest-asyncio>=0.24",
+  "ruff>=0.12",
+  "types-PyYAML>=6.0.12.20250915",
+]
+
+[project.scripts]
+argus = "argus_patrol.cli:main"
+
+[tool.pytest.ini_options]
+addopts = "-ra"
+testpaths = ["tests"]
+markers = [
+  "integration: requires a real camera and explicitly supplied environment variables",
+]
+
+[tool.ruff]
+line-length = 110
+target-version = "py311"
+
+[tool.ruff.lint]
+select = ["E", "F", "I", "UP", "B", "SIM"]
+
+[tool.mypy]
+files = ["src", "tests"]
+python_version = "3.11"
+strict = true
+warn_unreachable = true
+exclude = ["tests/integration/"]

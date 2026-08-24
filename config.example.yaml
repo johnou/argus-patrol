@@ -1,0 +1,24 @@
+camera:
+  uid: device_uid
+  username: admin
+  password: device_password
+  channel_id: 0
+  connect_timeout_seconds: 12
+  connect_attempts: 3
+  retry_backoff_seconds: 2
+
+# Find actual IDs with: argus --config argus.yaml presets
+patrol:
+  presets: [1, 2, 3, 4]
+  interval_min_seconds: 240
+  interval_max_seconds: 360
+  # IANA timezone for daily windows, e.g. Europe/Rome.
+  timezone: UTC
+  # Omit active_windows for 24/7 patrol.
+  active_windows: ["00:00-24:00"]
+  # Restricted example: ["12:30-14:00", "19:00-08:00"]
+
+# Optional local archive: argus --config argus.yaml patrol --timelapse
+# It saves the PTZ-primer JPEG already required for each recall; it does not
+# create another camera connection or snapshot. Completed days are rendered to
+# timelapses/YYYY-MM-DD/preset-<id>.mp4 using ffmpeg.

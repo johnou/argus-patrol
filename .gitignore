@@ -1,0 +1,19 @@
+.env
+.DS_Store
+.venv/
+.mypy_cache/
+.pytest_cache/
+.ruff_cache/
+__pycache__/
+*.py[cod]
+*.egg-info/
+
+# Local camera configuration may contain credentials.
+argus.yaml
+argus.yml
+config.yaml
+config.yml
+
+# Default snapshot output directory.
+snapshots/
+timelapses/
