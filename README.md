@@ -74,7 +74,9 @@ active_windows: ["12:30-14:00", "19:00-08:00"]
 ```
 
 Outside a window, patrol makes no camera connection. It remains disconnected
-until next allowed start.
+until next allowed start. Set `return_to_preset_id` to recall a home preset
+once as an active window ends; for example, `return_to_preset_id: 0` returns
+to preset 0 before waiting for the next window.
 
 For external patrol, turn off Reolink app **Auto-Return to Monitor Point**.
 Otherwise camera returns to app monitor point and defeats configured rotation.

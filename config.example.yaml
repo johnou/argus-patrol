@@ -17,6 +17,8 @@ patrol:
   # Omit active_windows for 24/7 patrol.
   active_windows: ["00:00-24:00"]
   # Restricted example: ["12:30-14:00", "19:00-08:00"]
+  # Optional: recall this preset once when an active window ends.
+  # return_to_preset_id: 1
 
 # Optional local archive: argus --config argus.yaml patrol --timelapse
 # It saves the PTZ-primer JPEG already required for each recall; it does not

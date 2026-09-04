@@ -52,7 +52,11 @@ def test_status_configuration_does_not_require_patrol_presets(monkeypatch: pytes
 def test_patrol_configuration_reads_preset_ids_and_interval(tmp_path: Path) -> None:
     config = tmp_path / "argus.yaml"
     config.write_text(
-        "patrol:\n  presets: [0, 1, 2]\n  interval_min_seconds: 240\n  interval_max_seconds: 360\n"
+        "patrol:\n"
+        "  presets: [0, 1, 2]\n"
+        "  interval_min_seconds: 240\n"
+        "  interval_max_seconds: 360\n"
+        "  return_to_preset_id: 0\n"
     )
 
     settings = load_patrol_settings(config)
@@ -60,6 +64,7 @@ def test_patrol_configuration_reads_preset_ids_and_interval(tmp_path: Path) -> N
     assert settings.presets == (0, 1, 2)
     assert settings.interval_min_seconds == 240
     assert settings.interval_max_seconds == 360
+    assert settings.return_to_preset_id == 0
 
 
 def test_patrol_configuration_reads_cross_midnight_active_windows(tmp_path: Path) -> None:

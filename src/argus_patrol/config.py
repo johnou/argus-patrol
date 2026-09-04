@@ -28,6 +28,7 @@ class PatrolSettings:
     interval_min_seconds: int
     interval_max_seconds: int
     schedule: DailySchedule = field(default_factory=lambda: DailySchedule.always(ZoneInfo("UTC")))
+    return_to_preset_id: int | None = None
 
 
 def load_settings(path: Path | None = None) -> CameraSettings:
@@ -63,6 +64,7 @@ def load_patrol_settings(path: Path | None = None) -> PatrolSettings:
         interval_min_seconds=interval_min_seconds,
         interval_max_seconds=interval_max_seconds,
         schedule=parse_daily_schedule(timezone, patrol_data.get("active_windows")),
+        return_to_preset_id=_optional_preset_id(patrol_data, "return_to_preset_id"),
     )
 
 
@@ -176,6 +178,19 @@ def _preset_ids(data: Mapping[str, Any]) -> tuple[int, ...]:
             raise ConfigurationError("patrol preset IDs must be integers from 0 through 255") from error
         preset_ids.append(validate_preset_id(parsed))
     return tuple(preset_ids)
+
+
+def _optional_preset_id(data: Mapping[str, Any], key: str) -> int | None:
+    value = data.get(key)
+    if value is None:
+        return None
+    if isinstance(value, bool):
+        raise ConfigurationError(f"{key} must be an integer from 0 through 255")
+    try:
+        preset_id = int(value)
+    except (TypeError, ValueError) as error:
+        raise ConfigurationError(f"{key} must be an integer from 0 through 255") from error
+    return validate_preset_id(preset_id)
 
 
 def _patrol_interval_bounds(data: Mapping[str, Any]) -> tuple[int, int]:

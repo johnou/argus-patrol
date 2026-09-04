@@ -58,6 +58,8 @@ class PatrolRunner:
         """Run until stopped; ``successful_operation_limit`` exists for tests."""
         current_index = 0
         known_preset_id: int | None = None
+        last_patrolled_preset_id: int | None = None
+        return_attempted = False
         successful_operations = 0
         next_operation_at = self._clock()
         while not stop.is_set():
@@ -72,6 +74,36 @@ class PatrolRunner:
                 )
                 continue
             if not self._settings.schedule.is_active(now):
+                return_preset_id = self._settings.return_to_preset_id
+                if (
+                    not return_attempted
+                    and return_preset_id is not None
+                    and last_patrolled_preset_id is not None
+                    and last_patrolled_preset_id != return_preset_id
+                ):
+                    return_attempted = True
+                    try:
+                        await self._camera.goto_preset(
+                            return_preset_id,
+                            prime_snapshot_output=self._snapshot_output(known_preset_id, now),
+                        )
+                    except ArgusError as error:
+                        log_event(
+                            self._logger,
+                            logging.WARNING,
+                            "Patrol return-to-preset failed; waiting for next active window",
+                            error=type(error).__name__,
+                            preset_id=return_preset_id,
+                        )
+                    else:
+                        known_preset_id = return_preset_id
+                        last_patrolled_preset_id = return_preset_id
+                        log_event(
+                            self._logger,
+                            logging.INFO,
+                            "Patrol returned to preset",
+                            preset_id=return_preset_id,
+                        )
                 next_operation_at = self._settings.schedule.next_active_at(now)
                 await self._wait_until(
                     stop,
@@ -81,6 +113,7 @@ class PatrolRunner:
                 )
                 continue
 
+            return_attempted = False
             preset_id = self._settings.presets[current_index]
             snapshot_output = self._snapshot_output(known_preset_id, now)
             try:
@@ -110,6 +143,7 @@ class PatrolRunner:
             else:
                 successful_operations += 1
                 known_preset_id = preset_id
+                last_patrolled_preset_id = preset_id
                 current_index = (current_index + 1) % len(self._settings.presets)
                 if (
                     successful_operation_limit is not None
@@ -120,6 +154,9 @@ class PatrolRunner:
             completed_at = self._clock()
             not_before = completed_at + timedelta(seconds=interval_seconds)
             next_operation_at = self._settings.schedule.next_active_at(not_before)
+            next_inactive_at = self._settings.schedule.next_inactive_at(completed_at)
+            if next_inactive_at is not None:
+                next_operation_at = min(next_operation_at, next_inactive_at)
 
     def _snapshot_output(self, known_preset_id: int | None, now: datetime) -> Path | None:
         if self._timelapse_archive is None or known_preset_id is None:

@@ -142,6 +142,53 @@ async def test_patrol_never_connects_outside_active_windows() -> None:
 
 
 @pytest.mark.asyncio
+async def test_patrol_returns_to_configured_preset_after_active_window_ends() -> None:
+    stop = asyncio.Event()
+
+    class StopAfterReturnMover(FakePresetMover):
+        async def goto_preset(
+            self, preset_id: int, *, prime_snapshot_output: Path | None = None
+        ) -> None:
+            await super().goto_preset(preset_id, prime_snapshot_output=prime_snapshot_output)
+            if preset_id == 0:
+                stop.set()
+
+    mover = StopAfterReturnMover()
+    utc = ZoneInfo("UTC")
+    now = datetime(2026, 8, 24, 13, 55, tzinfo=utc)
+
+    async def sleep(delay: float) -> None:
+        nonlocal now
+        now += timedelta(seconds=delay)
+
+    settings = PatrolSettings(
+        (2, 1, 0),
+        600,
+        600,
+        schedule=DailySchedule(utc, (DailyWindow.parse("12:30-14:00"),)),
+        return_to_preset_id=0,
+    )
+    runner = PatrolRunner(mover, settings, sleep=sleep, clock=lambda: now)
+
+    await runner.run(stop)
+
+    assert mover.calls == [2, 0]
+
+
+def test_schedule_finds_the_end_of_the_current_active_window() -> None:
+    utc = ZoneInfo("UTC")
+    schedule = DailySchedule(utc, (DailyWindow.parse("12:30-14:00"), DailyWindow.parse("19:00-08:00")))
+
+    assert schedule.next_inactive_at(datetime(2026, 8, 24, 13, 55, 30, tzinfo=utc)) == datetime(
+        2026, 8, 24, 14, 0, tzinfo=utc
+    )
+    assert schedule.next_inactive_at(datetime(2026, 8, 24, 22, 0, tzinfo=utc)) == datetime(
+        2026, 8, 25, 8, 0, tzinfo=utc
+    )
+    assert DailySchedule.always(utc).next_inactive_at(datetime(2026, 8, 24, 13, 55, tzinfo=utc)) is None
+
+
+@pytest.mark.asyncio
 async def test_timelapse_archives_known_preset_using_the_existing_primer_snapshot(tmp_path: Path) -> None:
     mover = FakePresetMover()
     now = datetime(2026, 8, 24, 21, 0, tzinfo=ZoneInfo("Europe/Rome"))

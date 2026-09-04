@@ -70,6 +70,21 @@ class DailySchedule:
             raise RuntimeError("daily schedule has no future active window")
         return min(candidates)
 
+    def next_inactive_at(self, when: datetime) -> datetime | None:
+        """Return the next local minute at which no configured window is active.
+
+        ``None`` means that the configured windows cover the entire day.
+        """
+        local = when.astimezone(self.timezone)
+        if not self.is_active(local):
+            return local
+        minute = local.replace(second=0, microsecond=0)
+        for offset in range(1, 24 * 60 + 1):
+            candidate = minute + timedelta(minutes=offset)
+            if not self.is_active(candidate):
+                return candidate
+        return None
+
 
 def parse_daily_schedule(timezone_name: str, raw_windows: object | None) -> DailySchedule:
     """Parse configured windows; omitted windows mean 24/7."""
