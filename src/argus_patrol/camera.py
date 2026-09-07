@@ -4,11 +4,14 @@ from __future__ import annotations
 
 import asyncio
 import logging
-import xml.etree.ElementTree as ET
+import re
 from collections.abc import Awaitable, Callable
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Protocol, TypeVar, cast
+
+from pyneolink import PtzPreset as PtzPreset  # type: ignore[import-untyped]
+from pyneolink.core.bc import ProtocolError  # type: ignore[import-untyped]
 
 from .errors import (
     AuthenticationError,
@@ -21,12 +24,7 @@ from .errors import (
     UidLookupError,
 )
 from .logging import log_event
-from .protocol import (
-    PTZ_PRESET_COMMAND_ID,
-    PTZ_PRESET_LIST_COMMAND_ID,
-    build_goto_preset_payload,
-    build_preset_extension,
-)
+from .protocol import validate_channel_id, validate_preset_id
 
 T = TypeVar("T")
 
@@ -44,25 +42,10 @@ class CameraSettings:
     retry_backoff_seconds: float = 2.0
 
 
-@dataclass(frozen=True)
-class PtzPreset:
-    """One stored, device-reported PTZ preset slot."""
+class _Ptz(Protocol):
+    def goto_preset(self, preset_id: int | str) -> None: ...
 
-    id: int
-    name: str | None
-    enabled: bool | None
-
-
-class _ResponseHeader(Protocol):
-    response_code: int
-
-
-class _Response(Protocol):
-    @property
-    def header(self) -> _ResponseHeader: ...
-
-    @property
-    def payload(self) -> bytes: ...
+    def presets(self) -> tuple[PtzPreset, ...]: ...
 
 
 class BlockingCamera(Protocol):
@@ -87,15 +70,7 @@ class BlockingCamera(Protocol):
         reconnect_retries: int = 1,
     ) -> bytes | Path: ...
 
-    def command(
-        self,
-        msg_id: int,
-        payload: bytes = b"",
-        *,
-        extension: bytes = b"",
-        retry_on_timeout: bool = True,
-        reconnect_retries: int = 1,
-    ) -> _Response: ...
+    def ptz(self, *, channel_id: int | None = None) -> _Ptz: ...
 
 
 CameraFactory = Callable[[CameraSettings], BlockingCamera]
@@ -149,38 +124,28 @@ class ArgusCamera:
 
     async def goto_preset(self, preset_id: int, *, prime_snapshot_output: Path | None = None) -> None:
         """Prime the Argus control session, recall one preset, then disconnect."""
-        payload = build_goto_preset_payload(preset_id, self._settings.channel_id)
-        extension = build_preset_extension(self._settings.channel_id)
+        validate_preset_id(preset_id)
+        validate_channel_id(self._settings.channel_id)
         log_event(self._logger, logging.INFO, "Moving to preset", preset_id=preset_id)
 
         def send(camera: BlockingCamera) -> None:
             self._prime_preset_session(camera, output=prime_snapshot_output)
             try:
-                reply = camera.command(
-                    PTZ_PRESET_COMMAND_ID,
-                    payload,
-                    extension=extension,
-                    # No retry after send: arrival may be unknown and duplicate PTZ
-                    # recalls add wake time without making the operation safer.
-                    retry_on_timeout=False,
-                    reconnect_retries=0,
-                )
+                camera.ptz(channel_id=self._settings.channel_id).goto_preset(preset_id)
             except TimeoutError as error:
                 raise PtzTimeoutError("preset response timed out") from error
             except PtzTimeoutError:
                 raise
+            except ProtocolError as error:
+                # Upstream also uses ProtocolError for malformed transport headers.
+                rejection = re.fullmatch(r"PTZ preset recall failed with response (\d+)", str(error))
+                if rejection:
+                    raise PtzRejectedError(
+                        f"preset {preset_id} rejected with response code {rejection[1]}"
+                    ) from error
+                raise BaichuanProtocolError("preset command failed") from error
             except Exception as error:
                 raise BaichuanProtocolError("preset command failed") from error
-            response_code = reply.header.response_code
-            log_event(
-                self._logger,
-                logging.DEBUG,
-                "Preset response",
-                response_code=response_code,
-                payload=_debug_payload(reply.payload),
-            )
-            if response_code != 200:
-                raise PtzRejectedError(f"preset {preset_id} rejected with response code {response_code}")
             log_event(self._logger, logging.INFO, "Preset accepted", preset_id=preset_id)
 
         await self._operate(send)
@@ -218,25 +183,15 @@ class ArgusCamera:
 
     async def get_presets(self) -> tuple[PtzPreset, ...]:
         """Read stored preset IDs and names without moving the camera."""
-        extension = build_preset_extension(self._settings.channel_id)
+        validate_channel_id(self._settings.channel_id)
 
         def query(camera: BlockingCamera) -> tuple[PtzPreset, ...]:
             try:
-                reply = camera.command(
-                    PTZ_PRESET_LIST_COMMAND_ID,
-                    extension=extension,
-                    retry_on_timeout=False,
-                    reconnect_retries=0,
-                )
+                return camera.ptz(channel_id=self._settings.channel_id).presets()
             except TimeoutError as error:
                 raise BaichuanProtocolError("preset-list response timed out") from error
             except Exception as error:
                 raise BaichuanProtocolError("preset-list command failed") from error
-            if reply.header.response_code != 200:
-                raise BaichuanProtocolError(
-                    f"preset-list request rejected with response code {reply.header.response_code}"
-                )
-            return _parse_preset_list(reply.payload)
 
         presets = await self._operate(query)
         log_event(self._logger, logging.INFO, "Preset list read", count=len(presets))
@@ -305,7 +260,7 @@ class ArgusCamera:
 
 def _pyneolink_camera(settings: CameraSettings) -> BlockingCamera:
     """Build a PyNeolink camera without its optional on-disk state cache."""
-    from pyneolink import Camera  # type: ignore[import-untyped]
+    from pyneolink import Camera
 
     # ``relay`` invokes PyNeolink's remote P2P registration flow. Its registered
     # candidates still include direct/local and mapped UDP before relay.
@@ -339,31 +294,3 @@ def _login_error(error: Exception) -> AuthenticationError | CameraWakeTimeout | 
     if isinstance(error, TimeoutError) or "timed out" in message:
         return CameraWakeTimeout("camera wake/connect timed out during login")
     return BaichuanProtocolError("Baichuan login failed")
-
-
-def _parse_preset_list(payload: bytes) -> tuple[PtzPreset, ...]:
-    try:
-        root = ET.fromstring(payload)
-    except ET.ParseError as error:
-        raise BaichuanProtocolError("preset-list response is not XML") from error
-
-    presets: list[PtzPreset] = []
-    for preset in root.findall(".//presetList/preset"):
-        raw_id = preset.findtext("id")
-        if raw_id is None:
-            continue
-        try:
-            preset_id = int(raw_id)
-        except ValueError as error:
-            raise BaichuanProtocolError("preset-list response contains a non-integer ID") from error
-        raw_enabled = preset.findtext("enable")
-        enabled = None if raw_enabled is None else raw_enabled.strip() not in {"0", "false", "False"}
-        name = preset.findtext("name")
-        presets.append(PtzPreset(id=preset_id, name=name, enabled=enabled))
-    return tuple(presets)
-
-
-def _debug_payload(payload: bytes) -> str:
-    """Bound one decrypted PTZ response for ``--debug`` without dumping frames."""
-    text = " ".join(payload.decode("utf-8", errors="replace").split())
-    return text[:512] if text else "<empty>"

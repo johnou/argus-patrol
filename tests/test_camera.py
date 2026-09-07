@@ -1,14 +1,22 @@
 from __future__ import annotations
 
-from dataclasses import dataclass
+import xml.etree.ElementTree as ET
+from dataclasses import dataclass, replace
 from pathlib import Path
 from typing import Any
 
 import pytest
+from pyneolink import Ptz  # type: ignore[import-untyped]
+from pyneolink.core.bc import ProtocolError  # type: ignore[import-untyped]
 
 from argus_patrol.camera import ArgusCamera, CameraSettings
-from argus_patrol.errors import AuthenticationError, BaichuanProtocolError, PtzRejectedError, PtzTimeoutError
-from argus_patrol.protocol import PTZ_PRESET_COMMAND_ID, PTZ_PRESET_LIST_COMMAND_ID
+from argus_patrol.errors import (
+    AuthenticationError,
+    BaichuanProtocolError,
+    ConfigurationError,
+    PtzRejectedError,
+    PtzTimeoutError,
+)
 
 
 @dataclass
@@ -21,6 +29,10 @@ class Reply:
     header: ReplyHeader
     payload: bytes = b""
 
+    @property
+    def xml_root(self) -> ET.Element:
+        return ET.fromstring(self.payload)
+
 
 class FakeCamera:
     def __init__(
@@ -29,6 +41,7 @@ class FakeCamera:
         connect_error: Exception | None = None,
         login_error: Exception | None = None,
     ) -> None:
+        self.config = settings()
         self.connect_error = connect_error
         self.login_error = login_error
         self.closed = False
@@ -67,6 +80,9 @@ class FakeCamera:
         self.calls.append(("snapshot", out, stream_type, retry_on_timeout, reconnect_retries))
         return Path(out) if out is not None else b"jpeg"
 
+    def ptz(self, *, channel_id: int | None = None) -> Ptz:
+        return Ptz(self, channel_id=channel_id)
+
     def command(
         self,
         msg_id: int,
@@ -101,7 +117,7 @@ async def test_successful_preset_command_closes_connection() -> None:
 
     assert fake.closed
     command = next(call for call in fake.calls if call[0] == "command")
-    assert command[1] == PTZ_PRESET_COMMAND_ID
+    assert command[1] == 19
     assert b"<id>3</id>" in command[2]
     assert b"<command>toPos</command>" in command[2]
     assert b"<channelId>0</channelId>" in command[3]
@@ -131,7 +147,7 @@ async def test_preset_list_reads_numeric_ids_without_motion() -> None:
         (2, "Tractor", False),
     ]
     command = next(call for call in fake.calls if call[0] == "command")
-    assert command[1] == PTZ_PRESET_LIST_COMMAND_ID
+    assert command[1] == 190
     assert command[2] == b""
     assert command[4:] == (False, 0)
 
@@ -198,5 +214,73 @@ async def test_cleanup_after_protocol_exception() -> None:
 
     with pytest.raises(BaichuanProtocolError):
         await camera.goto_preset(1)
+
+    assert fake.closed
+
+
+@pytest.mark.asyncio
+async def test_malformed_transport_is_not_a_preset_rejection() -> None:
+    fake = FakeCamera()
+    fake.command_error = ProtocolError("Short Baichuan header")
+    camera = ArgusCamera(settings(), camera_factory=lambda _settings: fake)
+
+    with pytest.raises(BaichuanProtocolError) as error:
+        await camera.goto_preset(1)
+
+    assert not isinstance(error.value, PtzRejectedError)
+    assert fake.closed
+    assert [call[0] for call in fake.calls].count("command") == 1
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("preset_id", [-1, 256, True, "3"])
+async def test_invalid_preset_does_not_connect(preset_id: Any) -> None:
+    fake = FakeCamera()
+    camera = ArgusCamera(settings(), camera_factory=lambda _settings: fake)
+
+    with pytest.raises(ConfigurationError):
+        await camera.goto_preset(preset_id)
+
+    assert fake.calls == []
+
+
+@pytest.mark.asyncio
+async def test_preset_archive_and_channel_are_preserved(tmp_path: Path) -> None:
+    fake = FakeCamera()
+    camera = ArgusCamera(replace(settings(), channel_id=7), camera_factory=lambda _settings: fake)
+    output = tmp_path / "archive" / "prime.jpg"
+
+    await camera.goto_preset(3, prime_snapshot_output=output)
+
+    assert fake.calls[2] == ("snapshot", output, "main", False, 0)
+    command = fake.calls[3]
+    assert b"<channelId>7</channelId>" in command[2]
+    assert b"<channelId>7</channelId>" in command[3]
+    assert output.parent.is_dir()
+    assert fake.closed
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("failure", [TimeoutError("timeout"), ProtocolError("Short Baichuan header")])
+async def test_preset_list_failure_closes_without_retry(failure: Exception) -> None:
+    fake = FakeCamera()
+    fake.command_error = failure
+    camera = ArgusCamera(settings(), camera_factory=lambda _settings: fake)
+
+    with pytest.raises(BaichuanProtocolError):
+        await camera.get_presets()
+
+    assert fake.closed
+    assert [call[0] for call in fake.calls] == ["connect", "login", "command", "close"]
+
+
+@pytest.mark.asyncio
+async def test_preset_list_rejection_closes_connection() -> None:
+    fake = FakeCamera()
+    fake.reply = Reply(ReplyHeader(400))
+    camera = ArgusCamera(settings(), camera_factory=lambda _settings: fake)
+
+    with pytest.raises(BaichuanProtocolError):
+        await camera.get_presets()
 
     assert fake.closed

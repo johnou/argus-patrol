@@ -9,7 +9,7 @@ description = "Battery-conscious Reolink Argus PT preset patrol over UID/P2P"
 readme = "README.md"
 requires-python = ">=3.11"
 dependencies = [
-  "pyneolink==0.4.2",
+  "pyneolink==0.5.0",
   "PyYAML>=6.0.2",
 ]
 
